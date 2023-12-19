@@ -45,55 +45,46 @@ def wallets_list():
     
 @app.route('/send_bcy', methods=['POST'])
 def send_bcy():
+    # Extracting data from the incoming POST request
     data = request.json
-    privkey = data.get("privkey")
-    address_from = data.get("address_from")
-    address_to = data.get("address_to")
-    amount = data.get("amount")
+    privkey, address_from, address_to, amount = data.get("privkey"), data.get("address_from"), data.get("address_to"), data.get("amount")
 
+    # Validating that all required fields are provided
     if not all([privkey, address_from, address_to, amount]):
         return jsonify({"error": "Missing data"}), 400
 
     try:
-        # Convert amount to integer
+        # Converting the amount to integer and checking sender's balance
         amount_int = int(amount)
-
         sender_info = blockcypher.get_address_overview(address_from, coin_symbol='bcy')
         if sender_info["balance"] < amount_int:
-            return jsonify({"error": "Not enough funds for this transaction."}), 400
+            return jsonify({"error": "Not enough funds"}), 400
 
+        # Creating and sending the transaction
         tx_ref = blockcypher.simple_spend(from_privkey=privkey, to_address=address_to, to_satoshis=amount_int, coin_symbol='bcy', api_key=API_TOKEN)
-        time.sleep(25)
+        time.sleep(25)  # Allowing time for the transaction to propagate
 
+        # Checking the status of the transaction
         transaction_details = blockcypher.get_transaction_details(tx_ref, coin_symbol='bcy')
         status = 'confirmed' if transaction_details['confirmations'] >= 1 else 'pending'
 
-        transaction = {
-            'sender': address_from,
-            'receiver': address_to,
-            'amount': amount_int,
-            'status': status,
-            'tx_ref': tx_ref,
-            'timestamp': datetime.utcnow(),
-            'confirmations': transaction_details['confirmations']
-        }
+        # Recording the transaction in the database
+        transaction = {'sender': address_from, 'receiver': address_to, 'amount': amount_int, 'status': status, 'tx_ref': tx_ref, 'timestamp': datetime.utcnow(), 'confirmations': transaction_details['confirmations']}
         db.transactions.update_one({'tx_ref': tx_ref}, {'$set': transaction}, upsert=True)
 
         if status == 'confirmed':
             update_address_data(address_from)
             update_address_data(address_to)
 
+        # Returning a success message with transaction details
         return jsonify({"message": f"Transaction successful. TX Hash: {tx_ref}, Status: {status}"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# Function to update address data in the database
 def update_address_data(address):
     address_info = blockcypher.get_address_overview(address, coin_symbol='bcy')
-    update_data = {
-        'final_balance': address_info['final_balance'],
-        'total_received': address_info['total_received'],
-        'total_sent': address_info['total_sent']
-    }
+    update_data = {'final_balance': address_info['final_balance'], 'total_received': address_info['total_received'], 'total_sent': address_info['total_sent']}
     db.addresses.update_one({'address': address}, {'$set': update_data})
 
 @app.route('/search', methods=['POST'])
