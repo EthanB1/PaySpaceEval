@@ -20,7 +20,6 @@ MONGO_URI = os.getenv('MONGO_URI')
 API_TOKEN = os.getenv('BLOCKCYPHER_API_TOKEN')
 
 # MongoDB setup
-MONGO_URI = os.getenv('MONGO_URI')
 client = MongoClient(MONGO_URI, tls=True)
 db = client.cryptodb
 
