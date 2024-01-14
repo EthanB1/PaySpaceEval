@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 import logging
 import os
 import re
-
+from typing import Tuple, Any, Optional, List, Dict
 
 load_dotenv()
 
@@ -31,17 +31,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 #Functions to sanitize input for send_bcy and search route
-def is_valid_address(address):
+def is_valid_address(address: str) -> bool:
     return re.match(r"^[a-zA-Z0-9]{27,35}$", address) is not None
 
-def is_valid_privkey(privkey):
+def is_valid_privkey(privkey: str) -> bool:
     return re.match(r"^[A-Fa-f0-9]{64}$", privkey) is not None
 
 @app.route('/wallet/<wallet_id>')
-def wallet_details(wallet_id):
+def wallet_details(wallet_id: str) -> Tuple[Any, int, dict]:
     try:
-        oid = ObjectId(wallet_id)
-        wallet = db.addresses.find_one({'_id': oid})
+        oid: ObjectId = ObjectId(wallet_id)
+        wallet: dict = db.addresses.find_one({'_id': oid})
         if not wallet:
             return jsonify({"error": "Wallet not found"}), 404
 
@@ -61,7 +61,7 @@ def wallet_details(wallet_id):
         # Use json_util.dumps to correctly serialize MongoDB documents
         return json_util.dumps(wallet), 200, {'ContentType': 'application/json'}
 
-    except ConnectionFailure:
+    except ConnectionFailure as e:
         logger.error("Database connection failed", exc_info=True)
         return jsonify({"error": "An error occurred. Please try again later."}), 503
     except PyMongoError as e:
@@ -72,15 +72,14 @@ def wallet_details(wallet_id):
         return jsonify({"error": "An error occurred. Please try again later."}), 500
     
 @app.route('/wallets')
-def wallets_list():
+def wallets_list() -> Tuple[Any, int]:
     try:
-        # Fetching all wallets from the database
-        wallets = list(db.addresses.find({}))
+        wallets: List[Dict[str, Any]] = list(db.addresses.find({}))
 
         # Convert MongoDB ObjectId to string for JSON serialization
         wallets = [{**wallet, '_id': str(wallet['_id'])} for wallet in wallets]
 
-        return jsonify(wallets)
+        return jsonify(wallets), 200
     except ConnectionFailure:
         logger.error("Database connection failed", exc_info=True)
         return jsonify({"error": "An error occurred. Please try again later."}), 503
@@ -92,24 +91,25 @@ def wallets_list():
         return jsonify({"error": "An error occurred. Please try again later."}), 500
 
 @app.route('/send_bcy', methods=['POST'])
-def send_bcy():
+def send_bcy() -> Tuple[Any, int]:
     try:
-        # Retrieve data from the POST request
-        data = request.json
-        privkey, address_from, address_to, amount = data.get("privkey"), data.get("address_from"), data.get("address_to"), data.get("amount")
+        data: Dict[str, Any] = request.json
+        privkey: str = data.get("privkey")
+        address_from: str = data.get("address_from")
+        address_to: str = data.get("address_to")
+        amount: str = data.get("amount")
 
-        # Check if all required fields are provided
         if not all([privkey, address_from, address_to, amount]):
             return jsonify({"error": "Missing required fields"}), 400
-        # Validate address and private key formats
+
         if not is_valid_address(address_from) or not is_valid_address(address_to):
             return jsonify({"error": "Invalid address format"}), 400
+
         if not is_valid_privkey(privkey):
             return jsonify({"error": "Invalid private key format"}), 400
 
-        # Convert and validate the transaction amount
         try:
-            amount_int = int(amount)
+            amount_int: int = int(amount)
             if amount_int <= 0:
                 raise ValueError("Amount must be positive")
         except ValueError as ve:
@@ -148,6 +148,7 @@ def send_bcy():
             update_address_data(address_to)
 
         return jsonify({"message": f"Transaction successful. TX Hash: {tx_ref}, Status: {status}"})
+    
     except ConnectionFailure:
         logger.error("Database connection failed", exc_info=True)
         return jsonify({"error": "An error occurred. Please try again later."}), 503
@@ -159,29 +160,35 @@ def send_bcy():
         return jsonify({"error": "An error occurred. Please try again later."}), 500
 
 # Function to update address data in the database
-def update_address_data(address):
-    address_info = blockcypher.get_address_overview(address, coin_symbol='bcy')
-    update_data = {'final_balance': address_info['final_balance'], 'total_received': address_info['total_received'], 'total_sent': address_info['total_sent']}
+def update_address_data(address: str) -> None:
+    address_info: dict = blockcypher.get_address_overview(address, coin_symbol='bcy')
+    update_data: dict = {
+        'final_balance': address_info['final_balance'],
+        'total_received': address_info['total_received'],
+        'total_sent': address_info['total_sent']
+    }
     db.addresses.update_one({'address': address}, {'$set': update_data})
 
-
 @app.route('/search', methods=['POST'])
-def search_address():
+def search_address() -> Any:
     try:
-        data = request.json
-        address = data.get('address')
+        # Extracting request data to find the specific address
+        data: Dict[str, Any] = request.json
+        address: Optional[str] = data.get('address')
 
-        # Validate address format
+        # Return an error if the address is invalid or missing
         if not address or not is_valid_address(address):
             return jsonify({"error": "Invalid or missing address"}), 400
 
-        existing_address = db.public_addresses.find_one({'address': address})
+        # Search for the existing address in the database
+        existing_address: Optional[Dict[str, Any]] = db.public_addresses.find_one({'address': address})
 
-        # Check if data exists and if it's older than 30 minutes, or if it doesn't exist at all
+        # Update address data if it's not found or outdated (more than 30 minutes old)
         if not existing_address or datetime.utcnow() - existing_address.get('last_updated', datetime.utcfromtimestamp(0)) > timedelta(minutes=30):
             try:
-                address_data = blockcypher.get_address_overview(address, coin_symbol='bcy')
-                record_to_update = {
+                # Fetch the latest address data from BlockCypher
+                address_data: Dict[str, Any] = blockcypher.get_address_overview(address, coin_symbol='bcy')
+                record_to_update: Dict[str, Any] = {
                     'address': address,
                     'final_balance': address_data['final_balance'],
                     'total_received': address_data['total_received'],
@@ -189,21 +196,21 @@ def search_address():
                     'last_updated': datetime.utcnow()
                 }
 
-                # Update the existing record, or insert a new one if it doesn't exist
+                # Update or insert the address record in the database
                 db.public_addresses.update_one({'address': address}, {'$set': record_to_update}, upsert=True)
                 existing_address = record_to_update
+
+                # Assign an ID to the updated record if not already present
                 if '_id' not in existing_address:
                     existing_address['_id'] = str(db.public_addresses.find_one({'address': address})['_id'])
             except Exception as e:
                 logger.error(f"Error updating or inserting address data: {str(e)}", exc_info=True)
                 return jsonify({"error": "An error occurred. Please try again later."}), 500
-
         else:
-            # Convert ObjectId to string for the existing record
             existing_address['_id'] = str(existing_address['_id'])
 
-        # Generate QR code
-        qr_code = pyqrcode.create(address)
+        # Generate a QR code for the address and add to the response data
+        qr_code: pyqrcode.QRCode = pyqrcode.create(address)
         existing_address['qr_code'] = qr_code.png_as_base64_str(scale=5)
 
         return jsonify(existing_address)
@@ -218,33 +225,37 @@ def search_address():
         logger.error(f"Unexpected error: {str(e)}", exc_info=True)
         return jsonify({"error": "An error occurred. Please try again later."}), 500
 
+
 @app.route('/create_wallet', methods=['POST'])
-def create_wallet():
+def create_wallet() -> Any:
     try:
-        # Generate new wallet using BlockCypher
+        # Attempt to generate a new wallet using BlockCypher API
         try:
-            wallet_info = blockcypher.generate_new_address(coin_symbol='bcy', api_key=API_TOKEN)
+            wallet_info: Dict[str, str] = blockcypher.generate_new_address(coin_symbol='bcy', api_key=API_TOKEN)
         except Exception as e:
             logging.error("BlockCypher API error", exc_info=True)
+            # Return error response if wallet generation fails
             return jsonify({"error": "Error generating wallet. Please try again later."}), 500
 
-        address = wallet_info['address']
-        private_key = wallet_info['private']
-        public_key = wallet_info['public']
+        # Extracting wallet details from the response
+        address: str = wallet_info['address']
+        private_key: str = wallet_info['private']
+        public_key: str = wallet_info['public']
 
-        # Create wallet record
-        wallet_record = {
+        # Preparing wallet record to be stored in the database
+        wallet_record: Dict[str, Any] = {
             'address': address,
-            'private_key': private_key,  
+            'private_key': private_key,
             'public_key': public_key,
             'final_balance': 0,
             'total_received': 0,
             'total_sent': 0
         }
 
-        # Insert into MongoDB
+        # Inserting the new wallet record into MongoDB
         db.addresses.insert_one(wallet_record)
 
+        # Successful wallet creation response
         return jsonify({"message": "Wallet created successfully", "wallet_id": str(wallet_record['_id'])})
     
     except ConnectionFailure:
